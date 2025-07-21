@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block title %}Link Not Found - Link Shortener{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6 text-center">
+        <div class="card">
+            <div class="card-body">
+                <h1 class="display-1">🤷‍♂️</h1>
+                <h2 class="card-title">Link Not Found</h2>
+                <p class="card-text">
+                    The shortcode <code>{{ shortcode }}</code> doesn't exist in our system.
+                </p>
+                <p class="text-muted">
+                    Please check the URL or contact an administrator to add this shortcode.
+                </p>
+                <div class="mt-4">
+                    <a href="{{ url_for('index') }}" class="btn btn-primary">← Back to Home</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

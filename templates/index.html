@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block title %}Link Shortener - Home{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="text-center mb-5">
+            <h1 class="display-4">🔗 Link Shortener</h1>
+            <p class="lead">Simple and fast URL shortening service</p>
+        </div>
+
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">How it works</h5>
+                <ol>
+                    <li>An administrator creates short codes that map to full URLs</li>
+                    <li>Users can access shortened links by visiting: <code>{{ request.host_url }}shortcode</code></li>
+                    <li>The service automatically redirects to the target URL</li>
+                </ol>
+                
+                <hr>
+                
+                <h5>Example</h5>
+                <p>If an admin creates a shortcode <code>google</code> that points to <code>https://www.google.com</code>, then:</p>
+                <p>Visiting <code>{{ request.host_url }}google</code> will redirect you to Google.</p>
+                
+                <div class="mt-4 text-center">
+                    <a href="{{ url_for('login') }}" class="btn btn-primary">Admin Panel</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
