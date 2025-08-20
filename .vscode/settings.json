@@ -1,0 +1,4 @@
+{
+    "appService.defaultWebAppToDeploy": "/subscriptions/1a75e98f-af10-4f05-8282-1c64449d3845/resourceGroups/appsvc_linux_eastus_basic/providers/Microsoft.Web/sites/dtc-link-shortener-0722",
+    "appService.deploySubpath": "."
+}

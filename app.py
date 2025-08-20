@@ -163,9 +163,9 @@ def add_link():
         flash('Both shortcode and URL are required!', 'error')
         return redirect(url_for('admin'))
     
-    # Add http:// if no protocol specified
+    # Add https:// if no protocol specified
     if not url.startswith(('http://', 'https://')):
-        url = 'http://' + url
+        url = 'https://' + url
     
     conn = get_db_connection()
     try:
@@ -193,9 +193,9 @@ def edit_link(link_id):
         flash('Both shortcode and URL are required!', 'error')
         return redirect(url_for('admin'))
     
-    # Add http:// if no protocol specified
+    # Add https:// if no protocol specified
     if not url.startswith(('http://', 'https://')):
-        url = 'http://' + url
+        url = 'https://' + url
     
     conn = get_db_connection()
     try:
