@@ -378,9 +378,17 @@ def change_password():
     flash('Password changed successfully!', 'success')
     return redirect(url_for('profile'))
 
-@app.route('/<path:shortcode>')
+@app.route('/<shortcode>')
 def redirect_link(shortcode):
     """Handle shortcode redirects"""
+    # Skip common browser requests that aren't shortcodes
+    if shortcode.lower() in ['favicon.ico', 'robots.txt', 'sitemap.xml', 'apple-touch-icon.png']:
+        return '', 404
+    
+    # Skip requests with file extensions (likely static files)
+    if '.' in shortcode and shortcode.split('.')[-1].lower() in ['css', 'js', 'png', 'jpg', 'jpeg', 'gif', 'ico', 'svg', 'woff', 'woff2']:
+        return '', 404
+    
     conn = get_db_connection()
     link = conn.execute(
         'SELECT url FROM links WHERE shortcode = ?', (shortcode,)
