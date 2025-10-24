@@ -396,8 +396,22 @@ def redirect_link(shortcode):
     conn.close()
     
     if link:
-        return redirect(link['url'], code=302)
+        target_url = link['url']
+        print(f"DEBUG: Redirecting shortcode '{shortcode}' to URL: '{target_url}'")
+        
+        # Validate URL to prevent loops
+        if not target_url or target_url.strip() == '':
+            print(f"ERROR: Empty URL for shortcode '{shortcode}'")
+            return render_template('404.html', shortcode=shortcode), 404
+        
+        # Prevent redirect loops to the same domain
+        if target_url.startswith(request.host_url) and shortcode in target_url:
+            print(f"ERROR: Redirect loop detected for shortcode '{shortcode}' -> '{target_url}'")
+            return render_template('404.html', shortcode=shortcode), 404
+            
+        return redirect(target_url, code=302)
     else:
+        print(f"DEBUG: Shortcode '{shortcode}' not found in database")
         return render_template('404.html', shortcode=shortcode), 404
 
 if __name__ == '__main__':
