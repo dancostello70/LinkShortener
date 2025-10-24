@@ -2,14 +2,25 @@ from flask import Flask, request, redirect, render_template, flash, url_for, ses
 import sqlite3
 import os
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.middleware.proxy_fix import ProxyFix
 from functools import wraps
 import config
 
 app = Flask(__name__)
 app.secret_key = config.SECRET_KEY
 
+# Configure Flask to work behind Azure App Service proxy
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+
 # Database configuration
 DATABASE = config.DATABASE_NAME
+
+@app.before_request
+def force_https():
+    """Force HTTPS in production"""
+    if not request.is_secure and app.env != 'development':
+        if request.headers.get('X-Forwarded-Proto') != 'https':
+            return redirect(request.url.replace('http://', 'https://', 1), code=301)
 
 def get_db_connection():
     """Get database connection"""
@@ -404,8 +415,12 @@ def redirect_link(shortcode):
             print(f"ERROR: Empty URL for shortcode '{shortcode}'")
             return render_template('404.html', shortcode=shortcode), 404
         
-        # Prevent redirect loops to the same domain
-        if target_url.startswith(request.host_url) and shortcode in target_url:
+        # Prevent redirect loops to the same domain (check both HTTP and HTTPS)
+        host_http = f"http://{request.host}/"
+        host_https = f"https://{request.host}/"
+        
+        if ((target_url.startswith(host_http) or target_url.startswith(host_https)) and 
+            shortcode in target_url):
             print(f"ERROR: Redirect loop detected for shortcode '{shortcode}' -> '{target_url}'")
             return render_template('404.html', shortcode=shortcode), 404
             
