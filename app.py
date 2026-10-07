@@ -1,96 +1,140 @@
-from flask import Flask, request, redirect, render_template, flash, url_for, session
-import sqlite3
 import os
-from werkzeug.security import generate_password_hash, check_password_hash
-from werkzeug.middleware.proxy_fix import ProxyFix
+import sqlite3
 from functools import wraps
+from urllib.parse import urlsplit
+
 import config
+from flask import (
+    Flask,
+    flash,
+    g,
+    has_app_context,
+    redirect,
+    render_template,
+    request,
+    session,
+    url_for,
+)
+from werkzeug.middleware.proxy_fix import ProxyFix
+from werkzeug.security import check_password_hash, generate_password_hash
 
 app = Flask(__name__)
-app.secret_key = config.SECRET_KEY
+app.config['SECRET_KEY'] = config.SECRET_KEY
 
 # Configure Flask to work behind Azure App Service proxy
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 # Database configuration
 DATABASE = config.DATABASE_NAME
+if not os.path.isabs(DATABASE):
+    DATABASE = os.path.join(app.root_path, DATABASE)
 
 @app.before_request
 def force_https():
     """Force HTTPS in production"""
-    if not request.is_secure and app.env != 'development':
-        if request.headers.get('X-Forwarded-Proto') != 'https':
-            return redirect(request.url.replace('http://', 'https://', 1), code=301)
+    if config.FORCE_HTTPS and not request.is_secure:
+        return redirect(request.url.replace('http://', 'https://', 1), code=301)
 
 def get_db_connection():
     """Get database connection"""
-    conn = sqlite3.connect(DATABASE)
+    database_directory = os.path.dirname(DATABASE)
+    if database_directory:
+        os.makedirs(database_directory, exist_ok=True)
+    conn = sqlite3.connect(DATABASE, timeout=10)
     conn.row_factory = sqlite3.Row
+    conn.execute('PRAGMA busy_timeout = 10000')
+    if has_app_context():
+        g.setdefault('database_connections', []).append(conn)
     return conn
+
+@app.teardown_appcontext
+def close_db_connections(exception=None):
+    """Close database connections even when a request raises an exception."""
+    for conn in g.pop('database_connections', []):
+        conn.close()
+
+def normalize_target_url(value):
+    """Return a valid HTTP(S) target URL, adding HTTPS when no scheme is given."""
+    value = (value or '').strip()
+    if not value or any(ord(char) < 32 or ord(char) == 127 for char in value):
+        return None
+
+    if '://' not in value:
+        value = 'https://' + value
+
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        parsed.port
+    except ValueError:
+        return None
+
+    if (parsed.scheme.lower() not in {'http', 'https'} or not parsed.netloc
+            or not hostname or any(char.isspace() for char in hostname)):
+        return None
+    return value
 
 def init_db():
     """Initialize the database with required tables"""
     conn = get_db_connection()
-    
-    # Create links table
-    conn.execute('''
-        CREATE TABLE IF NOT EXISTS links (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            shortcode TEXT UNIQUE NOT NULL,
-            url TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # Create users table with new schema
-    conn.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            is_admin BOOLEAN DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            last_login TIMESTAMP
-        )
-    ''')
-    
-    # Migrate existing users table if needed
     try:
-        # Check if is_admin column exists
-        cursor = conn.execute("PRAGMA table_info(users)")
-        columns = [column[1] for column in cursor.fetchall()]
-        
+        conn.execute('BEGIN IMMEDIATE')
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                shortcode TEXT UNIQUE NOT NULL,
+                url TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                is_admin BOOLEAN DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_login TIMESTAMP
+            )
+        ''')
+
+        columns = {
+            column['name']
+            for column in conn.execute('PRAGMA table_info(users)').fetchall()
+        }
+
         if 'is_admin' not in columns:
-            # Add is_admin column to existing table
             conn.execute('ALTER TABLE users ADD COLUMN is_admin BOOLEAN DEFAULT 0')
-            # Set first user as admin (likely the original admin user)
             conn.execute('UPDATE users SET is_admin = 1 WHERE id = 1')
-        
+
         if 'created_at' not in columns:
-            conn.execute('ALTER TABLE users ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
-            
+            conn.execute('ALTER TABLE users ADD COLUMN created_at TIMESTAMP')
+            conn.execute(
+                'UPDATE users SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL'
+            )
+
         if 'last_login' not in columns:
             conn.execute('ALTER TABLE users ADD COLUMN last_login TIMESTAMP')
-            
-    except sqlite3.Error as e:
-        print(f"Migration warning: {e}")
-    
-    # Create default admin user (username: admin, password: admin)
-    # Change this in production!
-    admin_hash = generate_password_hash(config.DEFAULT_ADMIN_PASSWORD)
-    conn.execute('''
-        INSERT OR IGNORE INTO users (username, password_hash, is_admin) 
-        VALUES (?, ?, ?)
-    ''', (config.DEFAULT_ADMIN_USERNAME, admin_hash, 1))
-    
-    conn.commit()
-    conn.close()
+
+        admin_hash = generate_password_hash(config.DEFAULT_ADMIN_PASSWORD)
+        conn.execute('''
+            INSERT OR IGNORE INTO users (username, password_hash, is_admin)
+            VALUES (?, ?, ?)
+        ''', (config.DEFAULT_ADMIN_USERNAME, admin_hash, 1))
+
+        conn.commit()
+    except sqlite3.Error:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 def login_required(f):
     """Decorator to require login for admin functions"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if 'user_id' not in session:
+        user = get_authenticated_user()
+        if not user:
             return redirect(url_for('login'))
         return f(*args, **kwargs)
     return decorated_function
@@ -99,13 +143,31 @@ def admin_required(f):
     """Decorator to require admin privileges"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if 'user_id' not in session:
+        user = get_authenticated_user()
+        if not user:
             return redirect(url_for('login'))
-        if not session.get('is_admin'):
+        if not user['is_admin']:
             flash('Admin privileges required!', 'error')
             return redirect(url_for('admin'))
         return f(*args, **kwargs)
     return decorated_function
+
+def get_authenticated_user():
+    """Refresh the session from the database and invalidate deleted accounts."""
+    user_id = session.get('user_id')
+    if user_id is None:
+        return None
+
+    user = get_db_connection().execute(
+        'SELECT id, username, is_admin FROM users WHERE id = ?', (user_id,)
+    ).fetchone()
+    if user is None:
+        session.clear()
+        return None
+
+    session['username'] = user['username']
+    session['is_admin'] = bool(user['is_admin'])
+    return user
 
 @app.route('/')
 def index():
@@ -116,8 +178,8 @@ def index():
 def login():
     """Admin login page"""
     if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '')
         
         conn = get_db_connection()
         user = conn.execute(
@@ -131,15 +193,12 @@ def login():
                 (user['id'],)
             )
             conn.commit()
-            conn.close()
-            
             session['user_id'] = user['id']
             session['username'] = user['username']
             session['is_admin'] = user['is_admin']
             flash('Login successful!', 'success')
             return redirect(url_for('admin'))
         else:
-            conn.close()
             flash('Invalid username or password!', 'error')
     
     return render_template('login.html')
@@ -167,16 +226,12 @@ def admin():
 @login_required
 def add_link():
     """Add new shortcode/URL pair"""
-    shortcode = request.form['shortcode'].strip()
-    url = request.form['url'].strip()
+    shortcode = request.form.get('shortcode', '').strip()
+    url = normalize_target_url(request.form.get('url', ''))
     
     if not shortcode or not url:
-        flash('Both shortcode and URL are required!', 'error')
+        flash('Enter a shortcode and a valid HTTP or HTTPS target URL!', 'error')
         return redirect(url_for('admin'))
-    
-    # Add https:// if no protocol specified
-    if not url.startswith(('http://', 'https://')):
-        url = 'https://' + url
     
     conn = get_db_connection()
     try:
@@ -197,25 +252,24 @@ def add_link():
 @login_required
 def edit_link(link_id):
     """Edit existing shortcode/URL pair"""
-    shortcode = request.form['shortcode'].strip()
-    url = request.form['url'].strip()
+    shortcode = request.form.get('shortcode', '').strip()
+    url = normalize_target_url(request.form.get('url', ''))
     
     if not shortcode or not url:
-        flash('Both shortcode and URL are required!', 'error')
+        flash('Enter a shortcode and a valid HTTP or HTTPS target URL!', 'error')
         return redirect(url_for('admin'))
-    
-    # Add https:// if no protocol specified
-    if not url.startswith(('http://', 'https://')):
-        url = 'https://' + url
     
     conn = get_db_connection()
     try:
-        conn.execute(
+        result = conn.execute(
             'UPDATE links SET shortcode = ?, url = ? WHERE id = ?',
             (shortcode, url, link_id)
         )
         conn.commit()
-        flash(f'Link updated successfully!', 'success')
+        if result.rowcount:
+            flash('Link updated successfully!', 'success')
+        else:
+            flash('Link not found!', 'error')
     except sqlite3.IntegrityError:
         flash(f'Shortcode "{shortcode}" already exists!', 'error')
     finally:
@@ -228,11 +282,12 @@ def edit_link(link_id):
 def delete_link(link_id):
     """Delete shortcode/URL pair"""
     conn = get_db_connection()
-    conn.execute('DELETE FROM links WHERE id = ?', (link_id,))
+    result = conn.execute('DELETE FROM links WHERE id = ?', (link_id,))
     conn.commit()
     conn.close()
     
-    flash('Link deleted successfully!', 'success')
+    flash('Link deleted successfully!' if result.rowcount else 'Link not found!',
+          'success' if result.rowcount else 'error')
     return redirect(url_for('admin'))
 
 @app.route('/admin/users')
@@ -251,8 +306,8 @@ def manage_users():
 @admin_required
 def add_user():
     """Add new user (admin only)"""
-    username = request.form['username'].strip()
-    password = request.form['password'].strip()
+    username = request.form.get('username', '').strip()
+    password = request.form.get('password', '').strip()
     is_admin = 'is_admin' in request.form
     
     if not username or not password:
@@ -284,7 +339,7 @@ def add_user():
 @admin_required
 def edit_user(user_id):
     """Edit user (admin only)"""
-    username = request.form['username'].strip()
+    username = request.form.get('username', '').strip()
     is_admin = 'is_admin' in request.form
     password = request.form.get('password', '').strip()
     
@@ -351,9 +406,9 @@ def profile():
 @login_required
 def change_password():
     """Change user's own password"""
-    current_password = request.form['current_password']
-    new_password = request.form['new_password']
-    confirm_password = request.form['confirm_password']
+    current_password = request.form.get('current_password', '')
+    new_password = request.form.get('new_password', '')
+    confirm_password = request.form.get('confirm_password', '')
     
     if not current_password or not new_password or not confirm_password:
         flash('All fields are required!', 'error')
@@ -407,30 +462,23 @@ def redirect_link(shortcode):
     conn.close()
     
     if link:
-        target_url = link['url']
-        print(f"DEBUG: Redirecting shortcode '{shortcode}' to URL: '{target_url}'")
-        
-        # Validate URL to prevent loops
-        if not target_url or target_url.strip() == '':
-            print(f"ERROR: Empty URL for shortcode '{shortcode}'")
+        target_url = normalize_target_url(link['url'])
+        if not target_url:
             return render_template('404.html', shortcode=shortcode), 404
-        
-        # Prevent redirect loops to the same domain (check both HTTP and HTTPS)
-        host_http = f"http://{request.host}/"
-        host_https = f"https://{request.host}/"
-        
-        if ((target_url.startswith(host_http) or target_url.startswith(host_https)) and 
-            shortcode in target_url):
-            print(f"ERROR: Redirect loop detected for shortcode '{shortcode}' -> '{target_url}'")
+
+        target = urlsplit(target_url)
+        request_host = urlsplit(request.host_url).hostname
+        if (target.hostname and request_host
+                and target.hostname.lower() == request_host.lower()
+                and target.path.rstrip('/') == '/' + shortcode):
             return render_template('404.html', shortcode=shortcode), 404
             
         return redirect(target_url, code=302)
     else:
-        print(f"DEBUG: Shortcode '{shortcode}' not found in database")
         return render_template('404.html', shortcode=shortcode), 404
 
+# Initialize here as well as for the development server so WSGI imports are ready.
+init_db()
+
 if __name__ == '__main__':
-    # Initialize database on startup
-    init_db()
-    # Run the app
     app.run(debug=config.DEBUG, host=config.HOST, port=config.PORT)

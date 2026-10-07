@@ -102,10 +102,23 @@ A simple Flask-based URL shortening service with SQLite database persistence and
 
 ## Configuration
 
-Key settings in `app.py`:
-- `app.secret_key` - Change this for production security
-- `DATABASE` - SQLite database filename
-- `debug=True` - Set to `False` for production
+Configuration can be supplied with environment variables:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SECRET_KEY` | Development-only placeholder | Flask session signing key; set a private, persistent value when deploying |
+| `FLASK_DEBUG` | `false` | Enable Flask debug mode (`true`/`1`) for local development only |
+| `FORCE_HTTPS` | `false` | Redirect HTTP requests to HTTPS when TLS is terminated by a trusted proxy |
+| `DATABASE_NAME` | `links.db` | SQLite database path; relative paths are resolved from the application directory |
+| `DEFAULT_ADMIN_USERNAME` | `admin` | Username inserted on first initialization |
+| `DEFAULT_ADMIN_PASSWORD` | `admin` | Password used when inserting the default admin on first initialization |
+| `HOST` | `0.0.0.0` | Development server bind address |
+| `PORT` | `5000` | Development server port |
+
+The database schema is initialized when the application module is loaded, including
+when it is served through a WSGI server. SQLite connections wait up to 10 seconds
+for concurrent writers, and existing user tables are migrated before requests are
+served.
 
 ## User Roles & Permissions
 
